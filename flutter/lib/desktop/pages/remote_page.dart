@@ -87,6 +87,7 @@ class _RemotePageState extends State<RemotePage>
   Timer? _timer;
   // PATCH_DATASYSTEM_TITLE
   Timer? _aliasTimer;
+  bool _settingTitle = false;
   String keyboardMode = "legacy";
   bool _isWindowBlur = false;
   AppLifecycleState? _macOSLifecycleState;
@@ -131,45 +132,57 @@ class _RemotePageState extends State<RemotePage>
   }
 
   // PATCH_DATASYSTEM_TITLE
-  // Le o alias do peer no address book e define como titulo da janela.
-  // O titulo do RustDesk e sobrescrito pelo Flutter quando o status muda,
-  // por isso mantemos um timer que reforca o alias a cada 2 segundos.
+  // Aplica o alias do peer como titulo da janela. Roda uma vez imediatamente
+  // e depois se reagenda indefinidamente para impedir que o RustDesk sobrescreva.
   Future<void> _applyAliasTitle() async {
-    // Aguarda a janela estar pronta para ser renomeada
-    await Future.delayed(const Duration(milliseconds: 800));
+    // Aguarda a janela existir antes de tentar renomear
+    for (int i = 0; i < 5; i++) {
+      await Future.delayed(const Duration(milliseconds: 500));
+      if (!mounted) return;
+      final ok = await _setAliasTitleOnce();
+      if (ok) break;
+    }
     if (!mounted) return;
+    _scheduleNextAliasTitle();
+  }
 
-    // Aplica uma vez imediatamente
-    await _setAliasTitleOnce();
-
-    // Reforca o titulo periodicamente (o RustDesk sobrescreve)
-    _aliasTimer = Timer.periodic(const Duration(seconds: 2), (_) async {
-      if (!mounted) {
-        _aliasTimer?.cancel();
-        _aliasTimer = null;
-        return;
-      }
+  // PATCH_DATASYSTEM_TITLE
+  // Reagenda a proxima aplicacao apos a atual terminar (evita sobreposicao).
+  void _scheduleNextAliasTitle() {
+    _aliasTimer?.cancel();
+    _aliasTimer = Timer(const Duration(seconds: 2), () async {
+      if (!mounted) return;
       await _setAliasTitleOnce();
+      if (!mounted) return;
+      _scheduleNextAliasTitle();
     });
   }
 
   // PATCH_DATASYSTEM_TITLE
-  Future<void> _setAliasTitleOnce() async {
+  // Retorna true se conseguiu definir o titulo (alias nao vazio e setTitle ok).
+  Future<bool> _setAliasTitleOnce() async {
+    if (_settingTitle) return false;
+    _settingTitle = true;
     try {
-      if (widget.tabWindowId == null) return;
+      if (widget.tabWindowId == null) return false;
+
       String alias = '';
       try {
         final peer = gFFI.abModel.find(widget.id);
         alias = peer?.alias ?? '';
       } catch (_) {
-        // Se o address book ainda nao estiver carregado, tenta de novo no proximo tick
-        return;
+        return false;
       }
-      if (alias.isEmpty) return;
+      if (alias.isEmpty) return false;
+
       final wc = await WindowController.fromWindowId(widget.tabWindowId!);
       await wc.setTitle(alias);
+      return true;
     } catch (e) {
       debugPrint('PATCH_DATASYSTEM_TITLE erro: $e');
+      return false;
+    } finally {
+      _settingTitle = false;
     }
   }
 
@@ -599,6 +612,7 @@ class _RemotePageState extends State<RemotePage>
     // PATCH_DATASYSTEM_TITLE - cancela o timer de alias
     _aliasTimer?.cancel();
     _aliasTimer = null;
+    _settingTitle = false;
 
     if (isMacOS) {
       if (closeSession) {
